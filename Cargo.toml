@@ -21,5 +21,13 @@ name = "generateGraph"
 path = "src/generateGraph.rs" 
 
 [[bin]]
-name = "generateGraph"
-path = "src/generateGraph-15min.rs" 
+name = "generateData-15min"
+path = "src/generateData-15min.rs" 
+
+[[bin]]
+name = "generateDataSpecifier"
+path = "src/generateData-15min-linespecifier.rs" 
+
+[[bin]]
+name = "pakenham"
+path = "src/pakenham.rs" 
