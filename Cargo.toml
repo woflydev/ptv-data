@@ -11,3 +11,15 @@ plotters = "0.3"
 indicatif = "0.16"
 serde_derive = "1.0"
 rayon = "1.5"
+
+[[bin]]
+name = "generateData"
+path = "src/generateCSV.rs"
+
+[[bin]]
+name = "generateGraph"
+path = "src/generateGraph.rs" 
+
+[[bin]]
+name = "generateGraph"
+path = "src/generateGraph-15min.rs" 

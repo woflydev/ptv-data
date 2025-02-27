@@ -1,4 +1,4 @@
-use csv::Reader;
+use csv::{ReaderBuilder};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
@@ -9,6 +9,9 @@ use indicatif::{ProgressBar, ProgressIterator};
 use chrono::{NaiveDate, NaiveTime};
 use chrono::Timelike;
 use std::io::BufRead;
+use rayon::prelude::*;
+use csv::Reader;
+
 
 #[derive(Debug, Deserialize)]
 struct Record {
@@ -38,8 +41,7 @@ struct Record {
 fn main() -> Result<(), Box<dyn Error>> {
     let file_path = "data.csv";
     let output_dir = "processed";
-    
-    // Ensure output directory exists
+
     create_dir_all(output_dir)?;
 
     let file = File::open(file_path)?;
@@ -49,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let total_records = rdr.records().count();
     let file = File::open(file_path)?;
     let mut rdr = Reader::from_reader(file);
-    
+
     // Initialize aggregation maps and variables.
     let mut boardings_per_line: HashMap<String, i32> = HashMap::new();
     let mut alightings_per_line: HashMap<String, i32> = HashMap::new();
@@ -69,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let record: Record = result?;
         let line = record.Line_Name.clone();
 
-        // Aggregate totals for boardings and alightings.
+        // Aggregate totals for boardings and alightings (sequentially, no issues with mutable borrow here).
         *boardings_per_line.entry(line.clone()).or_insert(0) += record.Passenger_Boardings;
         *alightings_per_line.entry(line.clone()).or_insert(0) += record.Passenger_Alightings;
         *services_count.entry(line.clone()).or_insert(0) += 1;
@@ -81,11 +83,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         if let Some(ref business_date) = selected_business_date {
             if &record.Business_Date == business_date {
-                if let Ok(departure_time) = NaiveTime::parse_from_str(&record.Departure_Time_Scheduled, "%H:%M:%S") {
-                    let hour = departure_time.hour();
+                // Parse departure time.
+                if NaiveDate::parse_from_str(&record.Business_Date, "%Y-%m-%d").is_ok() &&
+                   NaiveTime::parse_from_str(&record.Departure_Time_Scheduled, "%H:%M:%S").is_ok() {
+                    let time = NaiveTime::parse_from_str(&record.Departure_Time_Scheduled, "%H:%M:%S")?;
+                    let hour = time.hour();
+                    // Adjust to business hour:
+                    // 03:00 - 23:59 -> business hour = hour - 3
+                    // 00:00 - 02:59 -> business hour = hour + 21
                     let business_hour = if hour < 3 { hour + 21 } else { hour - 3 };
-                    // Initialize time_series if necessary and accumulate the count.
-                    let entry = time_series.entry(line.clone()).or_insert_with(|| vec![0; 24]);
+                    // Sum total movements (boardings + alightings) for this hour.
+                    let entry = time_series.entry(line.clone()).or_insert([0; 24]);
                     entry[business_hour as usize] += record.Passenger_Boardings + record.Passenger_Alightings;
                 }
             }
@@ -115,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (line, hourly_counts) in &time_series {
         let output_file_path = format!("{}/{}.csv", output_dir, line);
         let mut file = File::create(&output_file_path)?;
-        
+
         writeln!(file, "Hour,Movements")?;
         for (hour, &count) in hourly_counts.iter().enumerate() {
             writeln!(file, "{},{}", hour, count)?;
@@ -127,7 +135,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Returns an extended palette of distinct colors.
 fn get_color_palette() -> Vec<RGBColor> {
     vec![
         RGBColor(255, 0, 0),       // red
@@ -253,22 +260,44 @@ fn generate_time_series_chart(
     Ok(())
 }
 
-/// Generates a cumulative time series chart.
+/// Generates a cumulative time series line chart (with markers)
+/// for hourly cumulative total movements for the selected business day.
 fn generate_cumulative_time_series_chart(
     filename: &str,
     business_date: &str,
-    data: &HashMap<String, Vec<i32>>
+    data: &HashMap<String, [i32; 24]>
 ) -> Result<(), Box<dyn Error>> {
+    // Create cumulative sums for each line.
+    let mut cumulative_data: HashMap<String, Vec<i32>> = HashMap::new();
+    for (line, hourly_counts) in data {
+        let mut cum_vec = Vec::with_capacity(24);
+        let mut sum = 0;
+        for &count in hourly_counts.iter() {
+            sum += count;
+            cum_vec.push(sum);
+        }
+        cumulative_data.insert(line.clone(), cum_vec);
+    }
+
     let root = BitMapBackend::new(filename, (1600, 1200)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    let max_hourly = data.values().flat_map(|arr| arr.iter()).cloned().max().unwrap_or(0);
+    // Determine maximum cumulative value.
+    let max_cumulative = cumulative_data.values()
+        .flat_map(|vec| vec.iter())
+        .cloned()
+        .max()
+        .unwrap_or(0);
+
     let mut chart = ChartBuilder::on(&root)
-        .caption(format!("Cumulative Hourly Total Movements on {} (Business Day)", business_date), ("sans-serif", 50))
+        .caption(
+            format!("Cumulative Movements on {} (Business Day)", business_date),
+            ("sans-serif", 50),
+        )
         .margin(60)
         .set_label_area_size(LabelAreaPosition::Left, 100)
         .set_label_area_size(LabelAreaPosition::Bottom, 80)
-        .build_cartesian_2d(0..23, 0..(max_hourly + max_hourly / 10 + 1))?;
+        .build_cartesian_2d(0..23, 0..(max_cumulative + max_cumulative / 10 + 1))?;
 
     chart.configure_mesh()
         .x_desc("Business Hour (0 = 03:00, 23 = 02:00)")
@@ -279,14 +308,12 @@ fn generate_cumulative_time_series_chart(
     let palette = get_color_palette();
     let mut color_iter = palette.into_iter().cycle();
 
-    for (line, hourly_counts) in data {
+    for (line, cum_series) in &cumulative_data {
         let color = color_iter.next().unwrap();
-        let series: Vec<(i32, i32)> = hourly_counts.iter()
+        let series: Vec<(i32, i32)> = cum_series
+            .iter()
             .enumerate()
-            .scan(0, |state, (_, &count)| { // Destructure the tuple correctly
-                *state += count;
-                Some((*state, *state))
-            })
+            .map(|(hr, &value)| (hr as i32, value))
             .collect();
 
         chart.draw_series(LineSeries::new(series.clone(), color.stroke_width(3)))?;
