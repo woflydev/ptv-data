@@ -22,7 +22,11 @@ path = "src/generateGraph.rs"
 
 [[bin]]
 name = "generateData-15min"
-path = "src/generateData-15min.rs" 
+path = "src/generateData-15min.rs"
+
+[[bin]]
+name = "generateData5min"
+path = "src/generateData-5min-linespecifier.rs" 
 
 [[bin]]
 name = "generateDataSpecifier"
